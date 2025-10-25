@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # Servidor ZeroMQ
+  server:
+    build: .
+    container_name: info-system-server
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python server_zeromq.py
+    restart: unless-stopped
+    networks:
+      - info-network
+
+  # Cliente 1
+  client1:
+    build: .
+    container_name: info-system-client1
+    depends_on:
+      - server
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python client_zeromq.py
+    stdin_open: true
+    tty: true
+    networks:
+      - info-network
+
+  # Cliente 2
+  client2:
+    build: .
+    container_name: info-system-client2
+    depends_on:
+      - server
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python client_zeromq.py
+    stdin_open: true
+    tty: true
+    networks:
+      - info-network
+
+  # Cliente 3
+  client3:
+    build: .
+    container_name: info-system-client3
+    depends_on:
+      - server
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python client_zeromq.py
+    stdin_open: true
+    tty: true
+    networks:
+      - info-network
+
+networks:
+  info-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local
