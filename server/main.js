@@ -398,6 +398,7 @@ class Server {
         // Log apenas quando há mudança significativa (quando recebe relógio maior)
         if (receivedClock > clockBefore) {
             console.log(`[AUDITORIA RELÓGIO] Relógio lógico atualizado: ${clockBefore} -> ${clockAfter} (recebido: ${receivedClock})`);
+            console.log(`[COORDENADOR] Coordenador atual: ${this.coordinator || 'Nenhum'}`);
         }
     }
     
