@@ -1,18 +1,2 @@
-# Sistema de Pedido de Informações - Request-Reply com ZeroMQ
-# Dependências do projeto
-
-# Dependências principais:
-pyzmq>=25.0.0
-
-# Bibliotecas padrão utilizadas:
-# - json (formatação de mensagens)
-# - threading (concorrência no servidor)
-# - datetime (timestamps)
-# - typing (anotações de tipo)
-# - os (sistema de arquivos)
-# - pathlib (manipulação de caminhos)
-
-# Para desenvolvimento (opcional):
-# - pytest (testes unitários)
-# - black (formatação de código)
-# - flake8 (linting)
+pyzmq==25.1.2
+msgpack==1.0.7

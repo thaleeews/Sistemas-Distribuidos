@@ -1,30 +1,8 @@
-# Dockerfile para Sistema de Pedido de Informações com ZeroMQ
-FROM python:3.11-slim
+# Dockerfile para Python (broker, proxy, bot, reference)
+FROM python:3.13.7-alpine3.21
 
-# Define diretório de trabalho
 WORKDIR /app
 
-# Instala dependências do sistema
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libzmq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install pyzmq msgpack-python
 
-# Copia arquivos de dependências
-COPY requirements.txt .
-
-# Instala dependências Python
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copia código da aplicação
-COPY . .
-
-# Cria diretório para persistência de dados
-RUN mkdir -p /app/data
-
-# Expõe porta do ZeroMQ
-EXPOSE 5555
-
-# Comando padrão (pode ser sobrescrito)
-CMD ["python", "server_zeromq.py"]
+CMD ["python", "main.py"]

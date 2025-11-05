@@ -1,73 +1,72 @@
-version: '3.8'
-
 services:
-  # Servidor ZeroMQ
-  server:
-    build: .
-    container_name: info-system-server
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cc7261:broker
+    container_name: broker
+    volumes:
+      - ./broker:/app
     ports:
-      - "5555:5555"
+      - 5555:5555
+      - 5556:5556
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cc7261:proxy
+    container_name: proxy
     volumes:
+      - ./proxy:/app
+    ports:
+      - 5557:5557
+      - 5558:5558
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: cc7261:server
+    volumes:
+      - ./server:/app
       - ./data:/app/data
-    environment:
-      - PYTHONUNBUFFERED=1
-    command: python server_zeromq.py
-    restart: unless-stopped
-    networks:
-      - info-network
-
-  # Cliente 1
-  client1:
-    build: .
-    container_name: info-system-client1
     depends_on:
-      - server
-    volumes:
-      - .:/app
-    environment:
-      - PYTHONUNBUFFERED=1
-    command: python client_zeromq.py
+      - broker
+      - proxy
+      - reference
+    deploy:
+      replicas: 3
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    image: cc7261:client
     stdin_open: true
     tty: true
-    networks:
-      - info-network
-
-  # Cliente 2
-  client2:
-    build: .
-    container_name: info-system-client2
     depends_on:
       - server
-    volumes:
-      - .:/app
-    environment:
-      - PYTHONUNBUFFERED=1
-    command: python client_zeromq.py
-    stdin_open: true
-    tty: true
-    networks:
-      - info-network
 
-  # Cliente 3
-  client3:
-    build: .
-    container_name: info-system-client3
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cc7261:bot
+    volumes:
+      - ./bot:/app
     depends_on:
       - server
+    deploy:
+      replicas: 2
+
+  reference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cc7261:reference
+    container_name: reference
     volumes:
-      - .:/app
-    environment:
-      - PYTHONUNBUFFERED=1
-    command: python client_zeromq.py
-    stdin_open: true
-    tty: true
-    networks:
-      - info-network
-
-networks:
-  info-network:
-    driver: bridge
-
-volumes:
-  data:
-    driver: local
+      - ./reference:/app
+    ports:
+      - 5559:5559

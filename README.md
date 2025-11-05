@@ -1,383 +1,540 @@
-# Sistema de Pedido de Informações - Request-Reply com ZeroMQ
+# Sistema de Chat Distribuído - Sistemas Distribuídos
 
-Este projeto implementa um sistema de comunicação cliente-servidor usando o padrão Request-Reply com ZeroMQ em Python, permitindo login de usuários, gerenciamento de canais e persistência de dados.
+## 📋 Visão Geral
 
-## 🚀 Funcionalidades
+Este projeto implementa um sistema de chat distribuído completo usando ZeroMQ, seguindo rigorosamente as especificações das partes 1-5. O sistema permite comunicação entre múltiplos clientes através de servidores distribuídos, com suporte a canais públicos, mensagens privadas, sincronização de relógios e replicação de dados.
 
-- **Login de usuários**: Sistema de autenticação simples (apenas nome de usuário)
-- **Listagem de usuários**: Visualização de todos os usuários conectados
-- **Gerenciamento de canais**: Criação e listagem de canais para comunicação
-- **Persistência de dados**: Armazenamento em disco de usuários e canais
-- **Comunicação ZeroMQ**: Protocolo REQ-REP para troca de mensagens
-- **Mensagens JSON**: Formato estruturado para comunicação
-- **Containerização Docker**: Execução em containers isolados
-- **Interface interativa**: Cliente com menu de opções
+## 🏗️ Arquitetura do Sistema
 
-## 📋 Estrutura do Projeto
+O sistema é composto pelos seguintes componentes:
 
 ```
-├── server_zeromq.py   # Servidor ZeroMQ
-├── client_zeromq.py   # Cliente ZeroMQ
-├── demo_zeromq.py     # Demonstração do sistema
-├── Dockerfile         # Container do servidor
-├── docker-compose.yml # Orquestração de containers
-├── .gitignore         # Arquivos ignorados pelo Git
-├── data/              # Dados persistidos (criado automaticamente)
-│   ├── users.json     # Logins e usuários ativos
-│   └── channels.json  # Canais criados
-├── README.md          # Documentação
-└── requirements.txt   # Dependências
+┌─────────────┐         ┌─────────┐         ┌──────────┐
+│   Client    │◄───────►│ Broker  │◄───────►│ Server 1 │
+│    (C#)     │  REQ/REP│(Python) │  REQ/REP│  (JS)    │
+└─────────────┘         └─────────┘         └──────────┘
+                              │                    │
+┌─────────────┐              │                    │
+│     Bot     │◄─────────────┼──────────┐         │
+│  (Python)   │              │          │         │
+└─────────────┘         ┌────▼────┐     │         │
+                        │  Server  │     │         │
+                        │    2     │     │         │
+                        │   (JS)   │     │         │
+                        └────┬─────┘     │         │
+                             │           │         │
+                        ┌────▼─────┐     │         │
+                        │  Server  │     │         │
+                        │    3     │     │         │
+                        │   (JS)   │     │         │
+                        └────┬─────┘     │         │
+                             │           │         │
+                        ┌────▼───────────▼─────────▼────┐
+                        │         Proxy (Python)        │
+                        │          PUB/SUB               │
+                        └───────────┬───────────────────┘
+                                    │
+                        ┌───────────▼───────────┐
+                        │  Reference Server     │
+                        │      (Python)         │
+                        │    Rank/Heartbeat     │
+                        └───────────────────────┘
 ```
 
-## 🛠️ Instalação e Configuração
+### Componentes
+
+- **Client (C#)**: Interface interativa para usuários
+- **Server (JavaScript/Node.js)**: 3 réplicas processando requisições
+- **Broker (Python)**: Intermediário REQ/REP com balanceamento round-robin
+- **Proxy (Python)**: Intermediário PUB/SUB para mensagens em tempo real
+- **Bot (Python)**: 2 réplicas de clientes automatizados para testes
+- **Reference Server (Python)**: Gerencia ranks e heartbeats dos servidores
+
+## 🔧 Escolhas de Tecnologias e Linguagens
+
+### Por que C# para o Client?
+
+**Vantagens:**
+- **Performance**: .NET oferece excelente performance para aplicações de rede
+- **Biblioteca NetMQ**: Implementação madura e robusta do ZeroMQ para .NET
+- **Type Safety**: Sistema de tipos forte ajuda a prevenir erros
+- **MessagePack nativo**: Suporte oficial para serialização binária
+- **Cross-platform**: .NET 9.0 roda em múltiplas plataformas
+
+**Desvantagens consideradas:**
+- Overhead de runtime maior que C/C++
+- Mas a robustez e facilidade de desenvolvimento compensam
+
+### Por que JavaScript/Node.js para o Server?
+
+**Vantagens:**
+- **Event-driven**: Modelo assíncrono perfeito para I/O intensivo
+- **ZeroMQ.js**: Biblioteca nativa e eficiente
+- **JSON nativo**: Facilita manipulação de dados
+- **Desenvolvimento rápido**: Ecossistema rico e produtivo
+- **Concorrência**: Handle múltiplas requisições simultaneamente
+
+**Desvantagens consideradas:**
+- Single-threaded (mas compensado com eventos assíncronos)
+- Gerenciamento de memória menos eficiente que linguagens compiladas
+- Mas a produtividade e facilidade de uso são excelentes
+
+### Por que Python para os demais componentes?
+
+**Vantagens:**
+- **Simplicidade**: Código limpo e fácil de manter
+- **pyzmq**: Biblioteca Python-ZeroMQ oficial e estável
+- **Rápido desenvolvimento**: Prototipagem e iteração rápida
+- **Ecosystem**: Bibliotecas maduras (msgpack, json, etc.)
+- **Scripting**: Ideal para componentes de infraestrutura (broker, proxy)
+
+**Desvantagens consideradas:**
+- Performance menor que C/C++/Go
+- GIL (Global Interpreter Lock) limita threading
+- Mas para componentes de infraestrutura isso não é crítico
+
+### Por que ZeroMQ?
+
+**Vantagens:**
+- **Padrões de mensageria**: REQ/REP, PUB/SUB, ROUTER/DEALER
+- **Sem broker centralizado**: Arquitetura distribuída verdadeira
+- **Performance**: Alta throughput e baixa latência
+- **Linguagem agnóstica**: Funciona com múltiplas linguagens
+- **Simplicidade**: API simples e poderosa
+
+### Por que MessagePack?
+
+**Vantagens:**
+- **Compacto**: Menor que JSON (até 30% de redução)
+- **Rápido**: Serialização/deserialização mais rápida
+- **Cross-language**: Funciona entre C#, JavaScript e Python
+- **Binário**: Formato eficiente para rede
+- **Compatível**: Pode ser usado como substituição do JSON
+
+## 📦 Estrutura do Projeto
+
+```
+Sistemas-Distribuidos/
+├── client/                    # Cliente C# (.NET 9.0)
+│   ├── Program.cs            # Lógica principal do cliente
+│   ├── ChatClient.csproj     # Arquivo de projeto .NET
+│   └── Dockerfile            # Dockerfile para cliente
+├── server/                    # Servidor JavaScript (Node.js)
+│   ├── main.js               # Lógica principal do servidor
+│   ├── package.json          # Dependências Node.js
+│   ├── Dockerfile            # Dockerfile para servidor
+│   └── .dockerignore         # Arquivos ignorados no build
+├── broker/                    # Broker Python
+│   └── main.py               # Proxy REQ/REP
+├── proxy/                     # Proxy Python
+│   └── main.py               # Proxy PUB/SUB
+├── bot/                       # Bot Python
+│   └── main.py               # Cliente automatizado
+├── reference/                # Servidor de Referência Python
+│   └── main.py               # Gerenciamento de ranks
+├── data/                      # Dados persistentes (compartilhado)
+│   ├── users.json            # Usuários cadastrados
+│   ├── channels.json         # Canais criados
+│   └── messages.json         # Mensagens trocadas
+├── docker-compose.yml         # Orquestração de containers
+├── Dockerfile                 # Dockerfile base (Python)
+├── requirements.txt           # Dependências Python
+├── parte1.md                  # Especificação Parte 1
+├── parte2.md                  # Especificação Parte 2
+├── parte3.md                  # Especificação Parte 3
+├── parte4.md                  # Especificação Parte 4
+├── parte5.md                  # Especificação Parte 5
+└── README.md                  # Este arquivo
+```
+
+## 🚀 Implementação das Partes
+
+### ✅ Parte 1: Request-Reply
+
+**Funcionalidades Implementadas:**
+- ✅ Login de usuários (sem senha, apenas nome)
+- ✅ Listagem de usuários cadastrados
+- ✅ Criação de canais
+- ✅ Listagem de canais disponíveis
+- ✅ Persistência de dados (usuários e canais)
+
+**Formato de Mensagens:**
+- **Login**: `{service: "login", data: {user, timestamp, clock}}`
+- **Users**: `{service: "users", data: {timestamp, clock}}`
+- **Channel**: `{service: "channel", data: {channel, timestamp, clock}}`
+- **Channels**: `{service: "channels", data: {timestamp, clock}}`
+
+**Persistência:**
+- Dados salvos em JSON no diretório `/app/data`
+- Usuários: `users.json`
+- Canais: `channels.json`
+
+### ✅ Parte 2: Publisher-Subscriber
+
+**Funcionalidades Implementadas:**
+- ✅ Publicação de mensagens em canais
+- ✅ Envio de mensagens diretas entre usuários
+- ✅ Sistema de inscrição em tópicos (usuários e canais)
+- ✅ Bot automatizado (2 réplicas)
+- ✅ Persistência de mensagens
+
+**Formato de Mensagens:**
+- **Publish**: `{service: "publish", data: {user, channel, message, timestamp, clock}}`
+- **Message**: `{service: "message", data: {src, dst, message, timestamp, clock}}`
+
+**Arquitetura Pub/Sub:**
+- Servidores publicam no Proxy (porta 5557 - XSUB)
+- Clientes se inscrevem no Proxy (porta 5558 - XPUB)
+- Tópicos: nomes de usuários e nomes de canais
+
+### ✅ Parte 3: MessagePack
+
+**Migração Completa:**
+- ✅ Todas as mensagens REQ/REP usam MessagePack
+- ✅ Todas as mensagens PUB/SUB usam MessagePack
+- ✅ Comunicação com servidor de referência usa MessagePack
+- ✅ Fallback para JSON em caso de erro
+
+**Bibliotecas Utilizadas:**
+- **C#**: `MessagePack` (NuGet package)
+- **JavaScript**: `msgpack-lite` (npm package)
+- **Python**: `msgpack` (pip package)
+
+**Benefícios:**
+- Redução de ~30% no tamanho das mensagens
+- Serialização/deserialização mais rápida
+- Compatibilidade cross-language garantida
+
+### ✅ Parte 4: Relógios
+
+**Relógio Lógico (Algoritmo de Lamport):**
+- ✅ Implementado em todos os processos (client, bot, server)
+- ✅ Incrementado antes de cada envio de mensagem
+- ✅ Atualizado ao receber: `max(local, received) + 1`
+- ✅ Incluído em todas as mensagens
+
+**Sincronização de Relógio Físico (Algoritmo de Berkeley):**
+- ✅ Servidores solicitam hora ao coordenador a cada 10 mensagens
+- ✅ Coordenador responde com hora atual
+- ✅ Servidor de referência gerencia ranks dos servidores
+- ✅ Eleição de coordenador quando necessário
+- ✅ Logs de auditoria completos para rastreabilidade
+
+**Servidor de Referência:**
+- ✅ Atribuição de ranks aos servidores
+- ✅ Listagem de servidores disponíveis
+- ✅ Heartbeat para monitoramento
+- ✅ Remoção automática de servidores inativos
+
+**Logs de Auditoria:**
+Todos os eventos de sincronização são logados com prefixo `[AUDITORIA RELÓGIO]`:
+- Solicitações de hora ao coordenador
+- Respostas do coordenador
+- Atualizações de relógio lógico
+- Eleições de coordenador
+- Anúncios de novo coordenador
+
+### ✅ Parte 5: Consistência e Replicação
+
+**Problema Resolvido:**
+Com o broker fazendo balanceamento round-robin, cada servidor recebe apenas uma parte das mensagens. Se um servidor falhar, dados são perdidos.
+
+**Solução Implementada: Replicação Baseada em Pub/Sub**
+
+**Método Escolhido: Replicação Síncrona via Pub/Sub**
+
+**Por que este método?**
+1. **Simplicidade**: Usa a infraestrutura Pub/Sub já existente
+2. **Eficiência**: Broadcast nativo via ZeroMQ
+3. **Desacoplamento**: Servidores não precisam conhecer uns aos outros
+4. **Tolerância a falhas**: Se um servidor falhar, outros continuam
+5. **Consistência eventual**: Dados são replicados em tempo real
+
+**Como Funciona:**
+
+1. **Tópico de Replicação**: Criado tópico `"replication"` no Pub/Sub
+2. **Quando um servidor salva dados**:
+   - Salva localmente
+   - Publica no tópico `"replication"` com os dados
+   - Outros servidores recebem e aplicam
+
+3. **Tipos de Replicação**:
+   - **Incremental**: Cada novo dado (usuário, canal, mensagem) é replicado imediatamente
+   - **Sincronização completa**: Servidores novos podem solicitar sincronização completa
+   - **Evita loops**: Servidores ignoram suas próprias mensagens de replicação
+
+4. **Formato de Mensagens de Replicação**:
+```json
+{
+  "originServer": "server_123",
+  "dataType": "user" | "channel" | "message" | "sync",
+  "payload": { /* dados específicos */ },
+  "timestamp": 1234567890,
+  "clock": 42
+}
+```
+
+**Fluxo de Replicação:**
+
+```
+Servidor 1 recebe login
+    ↓
+Salva localmente (users.json)
+    ↓
+Publica no tópico "replication"
+    ↓
+    ├─→ Servidor 2 recebe e salva
+    ├─→ Servidor 3 recebe e salva
+    └─→ Servidor 1 ignora (própria mensagem)
+```
+
+**Sincronização Inicial:**
+- Servidores novos (rank > 1) solicitam sincronização após 5 segundos
+- Coordenador ou servidor rank 1 responde com dados completos
+- Delay aleatório evita múltiplas respostas simultâneas
+
+**Logs de Replicação:**
+Todos os eventos de replicação são logados com prefixo `[REPLICACAO]`:
+- Dados sendo replicados
+- Dados recebidos de outros servidores
+- Sincronizações completas
+- Erros na replicação
+
+**Garantias:**
+- ✅ Todos os servidores têm todos os dados
+- ✅ Dados são replicados em tempo real
+- ✅ Tolerância a falhas: se um servidor cair, outros continuam
+- ✅ Consistência eventual: dados eventualmente sincronizados
+- ✅ Sem perda de dados: histórico completo preservado
+
+## 🔌 Protocolos de Comunicação
+
+### Request-Reply (REQ/REP)
+- **Cliente ↔ Broker ↔ Servidor**
+- Usado para: login, listagem, criação de canais
+- Formato: MessagePack
+- Broker faz round-robin entre servidores
+
+### Publisher-Subscriber (PUB/SUB)
+- **Servidor → Proxy → Cliente/Bot**
+- Usado para: mensagens em tempo real, replicação
+- Tópicos: nomes de usuários, canais, "servers", "replication"
+- Formato: MessagePack
+
+### Servidor de Referência
+- **Servidor ↔ Servidor de Referência**
+- Usado para: ranks, heartbeats, eleição de coordenador
+- Formato: MessagePack
+
+## 📍 Portas Utilizadas
+
+| Porta | Serviço | Protocolo | Descrição |
+|-------|---------|-----------|-----------|
+| 5555 | Broker | REQ/REP | Frontend (clientes) |
+| 5556 | Broker | REQ/REP | Backend (servidores) |
+| 5557 | Proxy | PUB/SUB | XSUB (servidores publicam) |
+| 5558 | Proxy | PUB/SUB | XPUB (clientes recebem) |
+| 5559 | Reference | REQ/REP | Rank e heartbeat |
+
+## 🐳 Como Executar
 
 ### Pré-requisitos
-- Python 3.7 ou superior
-- Docker e Docker Compose (para execução em containers)
-- ZeroMQ (instalado automaticamente via pip)
+- Docker e Docker Compose instalados
+- .NET SDK 9.0 (opcional, para desenvolvimento local)
 
-### Instalação
+### Execução Completa
+
 ```bash
-# Instalar dependências Python
+# Construir e executar todos os serviços
+docker-compose up --build
+
+# Executar em background
+docker-compose up -d --build
+
+# Ver logs de um serviço específico
+docker-compose logs -f server
+docker-compose logs -f client
+docker-compose logs -f bot
+
+# Parar todos os serviços
+docker-compose down
+```
+
+### Desenvolvimento Local (Opcional)
+
+#### Cliente C#
+```bash
+cd client
+dotnet restore
+dotnet run
+```
+
+#### Servidor JavaScript
+```bash
+cd server
+npm install
+node main.js
+```
+
+#### Componentes Python
+```bash
+# Instalar dependências
 pip install -r requirements.txt
 
-# OU usar Docker (recomendado)
-docker-compose up --build
+# Broker
+cd broker
+python main.py
+
+# Proxy
+cd proxy
+python main.py
+
+# Bot
+cd bot
+python main.py
+
+# Reference
+cd reference
+python main.py
 ```
 
-## 🎯 Como Usar
+## 📊 Fluxo de Dados
 
-### Opção 1: Execução com Docker (Recomendado)
+### Login de Usuário
+1. Cliente envia REQ ao Broker
+2. Broker encaminha para um Servidor (round-robin)
+3. Servidor processa e salva
+4. Servidor replica dados para outros servidores via Pub/Sub
+5. Servidor responde REP ao Broker
+6. Broker encaminha REP ao Cliente
 
-#### Executar sistema completo:
-```bash
-docker-compose up --build
-```
+### Publicação em Canal
+1. Cliente envia REQ de publicação ao Broker
+2. Broker encaminha para um Servidor
+3. Servidor salva mensagem e replica
+4. Servidor publica no tópico do canal via Proxy
+5. Todos os clientes inscritos recebem a mensagem
+6. Servidor responde REP ao Cliente
 
-#### Executar apenas o servidor:
-```bash
-docker-compose up server
-```
+### Sincronização de Relógio
+1. A cada 10 mensagens, servidor solicita hora ao coordenador
+2. Coordenador responde com hora atual
+3. Servidor calcula offset e ajusta relógio
+4. Logs de auditoria registram todo o processo
 
-#### Executar clientes individuais:
-```bash
-# Em terminais separados
-docker-compose run client1
-docker-compose run client2
-docker-compose run client3
-```
+### Replicação de Dados
+1. Servidor recebe e salva dados localmente
+2. Servidor publica no tópico "replication"
+3. Todos os outros servidores recebem e aplicam
+4. Servidor original ignora própria mensagem
 
-### Opção 2: Execução Local
+## 🔍 Logs e Auditoria
 
-#### 1. Iniciar o Servidor
-```bash
-python server_zeromq.py
-```
+### Logs de Relógio
+Todos os logs de sincronização de relógio têm prefixo `[AUDITORIA RELÓGIO]`:
+- Solicitações de hora
+- Respostas do coordenador
+- Atualizações de relógio lógico
+- Eleições de coordenador
 
-O servidor será iniciado na porta 5555 (padrão) e aguardará requisições.
+### Logs de Replicação
+Todos os logs de replicação têm prefixo `[REPLICACAO]`:
+- Dados sendo replicados
+- Dados recebidos
+- Sincronizações completas
 
-#### 2. Conectar Clientes
-```bash
-python client_zeromq.py
-```
-
-Execute este comando em terminais separados para simular múltiplos usuários.
-
-#### 3. Demonstração Automática
-```bash
-python demo_zeromq.py
-```
-
-## 📡 Protocolo de Comunicação
-
-### Formato das Mensagens
-
-Todas as mensagens seguem o padrão JSON com duas partes principais:
-- `service`: Tipo de serviço solicitado
-- `data`: Dados específicos da requisição
-
-### 1. Login de Usuário
-
-**Cliente → Servidor:**
-```json
-{
-  "service": "login",
-  "data": {
-    "user": "nome_do_usuario",
-    "timestamp": "2024-01-01T12:00:00.000000"
-  }
-}
-```
-
-**Servidor → Cliente (Sucesso):**
-```json
-{
-  "service": "login",
-  "data": {
-    "status": "sucesso",
-    "timestamp": "2024-01-01T12:00:01.000000"
-  }
-}
-```
-
-**Servidor → Cliente (Erro):**
-```json
-{
-  "service": "login",
-  "data": {
-    "status": "erro",
-    "timestamp": "2024-01-01T12:00:01.000000",
-    "description": "Descrição do erro"
-  }
-}
-```
-
-### 2. Listagem de Usuários
-
-**Cliente → Servidor:**
-```json
-{
-  "service": "users",
-  "data": {
-    "timestamp": "2024-01-01T12:00:00.000000"
-  }
-}
-```
-
-**Servidor → Cliente:**
-```json
-{
-  "service": "users",
-  "data": {
-    "timestamp": "2024-01-01T12:00:01.000000",
-    "users": ["usuario1", "usuario2", "usuario3"]
-  }
-}
-```
-
-### 3. Criação de Canal
-
-**Cliente → Servidor:**
-```json
-{
-  "service": "channel",
-  "data": {
-    "channel": "nome_do_canal",
-    "timestamp": "2024-01-01T12:00:00.000000"
-  }
-}
-```
-
-**Servidor → Cliente (Sucesso):**
-```json
-{
-  "service": "channel",
-  "data": {
-    "status": "sucesso",
-    "timestamp": "2024-01-01T12:00:01.000000"
-  }
-}
-```
-
-**Servidor → Cliente (Erro):**
-```json
-{
-  "service": "channel",
-  "data": {
-    "status": "erro",
-    "timestamp": "2024-01-01T12:00:01.000000",
-    "description": "Canal já existe"
-  }
-}
-```
-
-### 4. Listagem de Canais
-
-**Cliente → Servidor:**
-```json
-{
-  "service": "channels",
-  "data": {
-    "timestamp": "2024-01-01T12:00:00.000000"
-  }
-}
-```
-
-**Servidor → Cliente:**
-```json
-{
-  "service": "channels",
-  "data": {
-    "timestamp": "2024-01-01T12:00:01.000000",
-    "channels": ["canal1", "canal2", "canal3"]
-  }
-}
-```
-
-## 💾 Persistência de Dados
-
-O sistema armazena automaticamente os dados em arquivos JSON no diretório `data/`:
-
-### Estrutura dos Dados
-
-#### `data/users.json` - Dados de Usuários
-```json
-{
-  "logins": [
-    {
-      "username": "alice",
-      "timestamp": "2024-01-01T12:00:00.000000"
-    }
-  ],
-  "active_users": ["alice", "bob"]
-}
-```
-
-#### `data/channels.json` - Dados de Canais
-```json
-{
-  "channels": [
-    {
-      "name": "geral",
-      "creator": "alice",
-      "created_at": "2024-01-01T12:00:00.000000"
-    }
-  ]
-}
-```
-
-### Recuperação de Dados
-- **Usuários**: Logins são persistidos e usuários ativos são mantidos entre sessões
-- **Canais**: Todos os canais criados são preservados permanentemente
-- **Backup**: Os arquivos JSON podem ser copiados para backup
-
-## 🔧 Configuração Avançada
-
-### Alterar Porta do Servidor
-Edite o arquivo `server_zeromq.py`:
-```python
-server = UserServer(host='*', port=9999)  # Nova porta
-```
-
-### Alterar Host do Cliente
-Edite o arquivo `client_zeromq.py`:
-```python
-client = UserClient(host='192.168.1.100', port=5555)  # IP remoto
-```
-
-### Configuração Docker
-Edite o `docker-compose.yml` para alterar portas ou configurações de rede.
-
-## 🧪 Testando o Sistema
-
-### Teste Básico (ZeroMQ)
-1. Inicie o servidor: `python server_zeromq.py`
-2. Em outro terminal, inicie um cliente: `python client_zeromq.py`
-3. Faça login com um nome de usuário
-4. Crie alguns canais
-5. Solicite a lista de usuários e canais
-6. Repita o processo com outros clientes
-
-### Teste com Docker
-1. Execute o sistema completo: `docker-compose up --build`
-2. Acesse os containers de clientes: `docker-compose exec client1 python client_zeromq.py`
-3. Teste login, criação de canais e listagens
-
-### Teste de Persistência
-1. Crie usuários e canais
-2. Pare o servidor (Ctrl+C)
-3. Reinicie o servidor
-4. Verifique se os dados foram preservados em `data/`
-
-### Teste de Múltiplos Usuários
-1. Inicie o servidor
-2. Abra 3-4 terminais e execute `python client_zeromq.py` em cada um
-3. Faça login com nomes diferentes em cada cliente
-4. Crie canais diferentes em cada cliente
-5. Em um dos clientes, solicite as listas de usuários e canais
-6. Verifique se todos os dados aparecem corretamente
-
-## 🐛 Tratamento de Erros
-
-O sistema trata os seguintes cenários de erro:
-- **Usuário já logado**: Impede login duplicado
-- **Nome vazio**: Rejeita nomes de usuário vazios
-- **Canal já existe**: Impede criação de canais duplicados
-- **Nome de canal vazio**: Rejeita nomes de canal vazios
-- **Conexão perdida**: Detecta desconexões ZeroMQ
-- **JSON inválido**: Valida formato das mensagens
-- **Serviço inexistente**: Rejeita serviços não reconhecidos
-- **Erro de persistência**: Trata falhas na gravação de dados
-
-## 📊 Logs e Monitoramento
-
-O servidor exibe logs detalhados incluindo:
-- Requisições recebidas via ZeroMQ
-- Mensagens recebidas e enviadas
-- Logins realizados e persistidos
-- Criação de canais
-- Operações de persistência de dados
-- Erros e exceções
-- Status de conexões
-
-## 🔒 Considerações de Segurança
-
-Este é um protótipo para demonstração. Para uso em produção, considere:
-- Implementar autenticação com senhas
-- Criptografar comunicações (TLS/SSL)
-- Validar entrada de dados
-- Implementar rate limiting
-- Adicionar logs de auditoria
-- Sanitizar nomes de usuários e canais
-- Implementar controle de acesso por canal
-- Backup automático dos dados persistidos
-
-## 📝 Exemplo de Uso
+### Filtragem de Logs
 
 ```bash
-# Terminal 1 - Servidor ZeroMQ
-$ python server_zeromq.py
-🚀 Servidor ZeroMQ iniciado em tcp://*:5555
-Aguardando requisições...
-📨 Requisição recebida: {"service": "login", "data": {"user": "alice", "timestamp": "..."}}
-✅ Usuário 'alice' logado com sucesso
-📤 Resposta enviada: {"service": "login", "data": {"status": "sucesso", "timestamp": "..."}}
+# Apenas logs de relógio
+docker-compose logs | grep "AUDITORIA RELÓGIO"
 
-# Terminal 2 - Cliente 1
-$ python client_zeromq.py
-🔗 Conectado ao servidor localhost:5555
-👤 Digite seu nome de usuário: alice
-✅ Login realizado com sucesso como 'alice'
-📋 MENU PRINCIPAL
-1. Ver usuários conectados
-2. Ver canais disponíveis
-3. Criar novo canal
-4. Fazer logout e sair
-5. Sair sem logout
+# Apenas logs de replicação
+docker-compose logs | grep "REPLICACAO"
 
-# Terminal 3 - Cliente 2
-$ python client_zeromq.py
-🔗 Conectado ao servidor localhost:5555
-👤 Digite seu nome de usuário: bob
-✅ Login realizado com sucesso como 'bob'
-📺 Tentando criar canal 'geral'...
-✅ Canal 'geral' criado com sucesso
+# Logs de um servidor específico
+docker-compose logs server-1 | grep "AUDITORIA"
 ```
 
-### Exemplo com Docker
+## 🧪 Testes
 
-```bash
-# Executar sistema completo
-$ docker-compose up --build
-Creating info-system-server ... done
-Creating info-system-client1 ... done
-Creating info-system-client2 ... done
-Creating info-system-client3 ... done
+O sistema inclui bots automatizados que:
+1. Fazem login com nomes aleatórios
+2. Listam e criam canais
+3. Se inscrevem em canais
+4. Publicam 10 mensagens por ciclo
+5. Testam toda a funcionalidade do sistema
 
-# Acessar cliente específico
-$ docker-compose exec client1 python client_zeromq.py
-```
+Execute os bots e monitore os logs para verificar:
+- ✅ Replicação de dados entre servidores
+- ✅ Sincronização de relógios
+- ✅ Publicação e recebimento de mensagens
+- ✅ Persistência de dados
 
-## 🤝 Contribuição
+## 📝 Conformidade com Especificações
 
-Este projeto foi desenvolvido como demonstração do padrão Request-Reply para sistemas distribuídos. Para melhorias ou correções, sinta-se livre para contribuir.
+### ✅ Parte 1: Request-Reply
+- [x] Login de usuários
+- [x] Listagem de usuários
+- [x] Criação de canais
+- [x] Listagem de canais
+- [x] Persistência de dados
+
+### ✅ Parte 2: Publisher-Subscriber
+- [x] Publicação em canais
+- [x] Mensagens diretas
+- [x] Sistema de inscrição
+- [x] Bot automatizado (2 réplicas)
+- [x] Persistência de mensagens
+
+### ✅ Parte 3: MessagePack
+- [x] Todas as mensagens usam MessagePack
+- [x] Compatibilidade entre C#, JavaScript e Python
+- [x] Fallback para JSON
+
+### ✅ Parte 4: Relógios
+- [x] Relógio lógico (Lamport) em todos os processos
+- [x] Sincronização de relógio físico (Berkeley)
+- [x] Servidor de referência
+- [x] Eleição de coordenador
+- [x] Logs de auditoria completos
+
+### ✅ Parte 5: Consistência e Replicação
+- [x] Replicação de dados entre servidores
+- [x] Todos os servidores têm todos os dados
+- [x] Sincronização inicial
+- [x] Replicação em tempo real
+- [x] Tolerância a falhas
+
+## 🎯 Funcionalidades Avançadas
+
+### Balanceamento de Carga
+- Broker faz round-robin entre servidores
+- Carga distribuída uniformemente
+- Alta disponibilidade
+
+### Tolerância a Falhas
+- Se um servidor cair, outros continuam funcionando
+- Dados replicados em múltiplos servidores
+- Eleição automática de novo coordenador
+
+### Escalabilidade
+- Fácil adicionar mais servidores
+- Sistema cresce horizontalmente
+- Sem gargalo centralizado
+
+### Observabilidade
+- Logs detalhados para auditoria
+- Rastreamento de sincronização de relógios
+- Monitoramento de replicação
+
+## 📚 Referências
+
+- [ZeroMQ Guide](http://zguide.zeromq.org/)
+- [MessagePack Specification](https://msgpack.org/)
+- [Lamport Logical Clocks](https://en.wikipedia.org/wiki/Lamport_timestamp)
+- [Berkeley Algorithm](https://en.wikipedia.org/wiki/Berkeley_algorithm)
+
+## 👥 Autores
+
+Projeto desenvolvido para a disciplina de Sistemas Distribuídos por Thales Pasquotto.
