@@ -2,7 +2,9 @@
 
 # Dados persistidos (não versionar)
 data/
-*.json
+# Não ignorar package.json e package-lock.json
+!package.json
+!package-lock.json
 
 # Python
 __pycache__/
@@ -52,7 +54,7 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
+# package-lock.json não deve ser ignorado (removido da lista)
 
 # .NET
 bin/

@@ -35,6 +35,8 @@ services:
       - broker
       - proxy
       - reference
+    environment:
+      - SERVER_SERVICE_NAME=server
     deploy:
       replicas: 3
 

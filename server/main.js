@@ -1,6 +1,7 @@
 const zmq = require('zeromq');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const msgpack = require('msgpack-lite');
 
 class Server {
@@ -38,22 +39,32 @@ class Server {
         
         // relógio lógico
         this.logicalClock = 0;
-        this.serverName = `server_${Math.floor(Math.random() * 1000)}`;
+        // Usar hostname do container como identificador único temporário
+        // Será atualizado para um nome legível quando o rank for obtido
+        const hostname = process.env.HOSTNAME || os.hostname();
+        this.serverName = hostname || `server_${Math.floor(Math.random() * 1000)}`;
         this.serverRank = null;
         this.coordinator = null;
         this.messageCount = 0;
         this.serverList = []; // lista de outros servidores
+        this.replicationListenerRunning = false; // flag para garantir apenas uma instância do listener
+        this.serverListenerRunning = false; // flag para garantir apenas uma instância do listener de servidores
+        this.serverRequestListenerRunning = false; // flag para garantir apenas uma instância do listener de requisições
         
         // dados persistentes
+        // Cada servidor salva em seu próprio diretório baseado no serverRank
+        // Isso evita condições de corrida quando múltiplos servidores escrevem simultaneamente
         this.dataDir = "/app/data";
-        this.usersFile = path.join(this.dataDir, "users.json");
-        this.channelsFile = path.join(this.dataDir, "channels.json");
-        this.messagesFile = path.join(this.dataDir, "messages.json");
+        // Diretório será criado quando o rank for obtido
+        this.serverDataDir = null;
+        this.usersFile = null;
+        this.channelsFile = null;
+        this.messagesFile = null;
         
-        // carregar dados existentes
-        this.users = this.loadUsers();
-        this.channels = this.loadChannels();
-        this.messages = this.loadMessages();
+        // Inicializar arrays vazios - dados serão carregados após obter o rank
+        this.users = [];
+        this.channels = [];
+        this.messages = [];
         
         // registrar no servidor de referência
         this.registerWithReference();
@@ -61,122 +72,298 @@ class Server {
         // iniciar heartbeat
         this.startHeartbeat();
         
-        // iniciar listener pro tópico "servers"
+        // iniciar listeners
         this.startServerListener();
-        
-        // iniciar listener pra replicação de dados
         this.startReplicationListener();
-        
-        // iniciar listener pra requisições de outros servidores
         this.startServerRequestListener();
         
         console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} iniciado`);
         console.log(`[AUDITORIA RELÓGIO] Relógio lógico inicial: ${this.logicalClock}`);
-        console.log(`[AUDITORIA RELÓGIO] Coordenador inicial: ${this.coordinator || 'Nenhum'}`);
+        console.log(`[AUDITORIA RELÓGIO] Coordenador inicial: ${this.getCoordinatorDisplayName()}`);
+    }
+    
+    updateDataDirectory() {
+        // Só criar diretório se tiver rank
+        if (this.serverRank === null) {
+            console.log(`[PERSISTENCIA] Aguardando rank para criar diretório de dados`);
+            return;
+        }
+        
+        // Usar rank para criar nome legível do diretório
+        const dirName = `server_${this.serverRank}`;
+        const newServerDataDir = path.join(this.dataDir, dirName);
+        
+        // Se o diretório mudou (por exemplo, quando obtemos o rank), migrar dados
+        if (this.serverDataDir && this.serverDataDir !== newServerDataDir && fs.existsSync(this.serverDataDir)) {
+            console.log(`[PERSISTENCIA] Migrando dados de ${this.serverDataDir} para ${newServerDataDir}`);
+            try {
+                // Criar novo diretório se não existir
+                if (!fs.existsSync(newServerDataDir)) {
+                    fs.mkdirSync(newServerDataDir, { recursive: true });
+                }
+                
+                // Migrar arquivos se o novo diretório estiver vazio ou não existir os arquivos
+                const filesToMigrate = ['users.json', 'channels.json', 'messages.json'];
+                filesToMigrate.forEach(file => {
+                    const oldFile = path.join(this.serverDataDir, file);
+                    const newFile = path.join(newServerDataDir, file);
+                    
+                    if (fs.existsSync(oldFile) && !fs.existsSync(newFile)) {
+                        fs.copyFileSync(oldFile, newFile);
+                        console.log(`[PERSISTENCIA] Arquivo ${file} migrado de ${this.serverDataDir} para ${newServerDataDir}`);
+                    }
+                });
+            } catch (error) {
+                console.error(`[PERSISTENCIA] Erro ao migrar dados: ${error.message}`);
+            }
+        }
+        
+        // Atualizar diretório atual
+        this.serverDataDir = newServerDataDir;
+        
+        // Criar diretório se não existir
+        if (!fs.existsSync(this.serverDataDir)) {
+            fs.mkdirSync(this.serverDataDir, { recursive: true });
+        }
+        
+        // Atualizar caminhos dos arquivos
+        this.usersFile = path.join(this.serverDataDir, "users.json");
+        this.channelsFile = path.join(this.serverDataDir, "channels.json");
+        this.messagesFile = path.join(this.serverDataDir, "messages.json");
+        
+        console.log(`[PERSISTENCIA] Servidor ${this.serverName} (rank: ${this.serverRank}) salvando dados em: ${this.serverDataDir}`);
+    }
+    
+    migrateFromOldDirectories() {
+        // Tentar migrar dados de diretórios antigos (hash) se existirem
+        try {
+            if (!fs.existsSync(this.dataDir)) {
+                return;
+            }
+            
+            const entries = fs.readdirSync(this.dataDir);
+            const hashDirs = entries.filter(entry => {
+                const fullPath = path.join(this.dataDir, entry);
+                return fs.statSync(fullPath).isDirectory() && /^[a-f0-9]{12}$/.test(entry);
+            });
+            
+            if (hashDirs.length === 0) {
+                return;
+            }
+            
+            console.log(`[PERSISTENCIA] Encontrados ${hashDirs.length} diretório(s) antigo(s) com hash: ${hashDirs.join(', ')}`);
+            
+            // Migrar dados do primeiro diretório hash encontrado (assumindo que é do mesmo servidor)
+            const oldHashDir = path.join(this.dataDir, hashDirs[0]);
+            const filesToMigrate = ['users.json', 'channels.json', 'messages.json'];
+            
+            filesToMigrate.forEach(file => {
+                const oldFile = path.join(oldHashDir, file);
+                const newFile = path.join(this.serverDataDir, file);
+                
+                if (fs.existsSync(oldFile) && !fs.existsSync(newFile)) {
+                    try {
+                        fs.copyFileSync(oldFile, newFile);
+                        console.log(`[PERSISTENCIA] Arquivo ${file} migrado de diretório hash ${hashDirs[0]} para server_${this.serverRank}`);
+                    } catch (error) {
+                        console.error(`[PERSISTENCIA] Erro ao migrar ${file}: ${error.message}`);
+                    }
+                }
+            });
+        } catch (error) {
+            console.error(`[PERSISTENCIA] Erro ao verificar diretórios antigos: ${error.message}`);
+        }
     }
     
     startServerListener() {
+        // Garantir que apenas uma instância do listener esteja rodando
+        if (this.serverListenerRunning) {
+            console.log(`[AUDITORIA RELÓGIO] Listener de servidores já está rodando`);
+            return;
+        }
+        
+        this.serverListenerRunning = true;
+        
         // thread pra escutar mensagens do tópico "servers"
-        setInterval(async () => {
-            try {
-                const frames = await this.serverSubSocket.receive();
-                if (frames && frames.length >= 2) {
-                    const topic = frames[0].toString();
-                    const messageBytes = frames[1];
+        // Usar loop contínuo ao invés de setInterval para não perder mensagens
+        (async () => {
+            while (this.serverListenerRunning) {
+                try {
+                    // ZeroMQ não permite múltiplas operações receive() simultâneas
+                    // Garantir que apenas uma operação esteja ativa por vez
+                    const frames = await this.serverSubSocket.receive();
                     
-                    if (topic === "servers") {
-                        // garantir que messageBytes é um buffer
-                        const messageBuffer = Buffer.isBuffer(messageBytes) ? messageBytes : Buffer.from(messageBytes);
-                        const data = msgpack.decode(messageBuffer);
-                        if (data.service === "election" && data.data.coordinator) {
-                            const oldCoordinator = this.coordinator;
-                            this.coordinator = data.data.coordinator;
-                            const clockReceived = data.data.clock || 0;
-                            this.updateClock(clockReceived);
-                            console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} recebeu anúncio de novo coordenador`);
-                            console.log(`[AUDITORIA RELÓGIO] Coordenador anterior: ${oldCoordinator || 'Nenhum'}`);
-                            console.log(`[AUDITORIA RELÓGIO] Novo coordenador: ${this.coordinator}`);
-                            console.log(`[AUDITORIA RELÓGIO] Relógio lógico recebido: ${clockReceived}, Relógio atual: ${this.logicalClock}`);
+                    if (frames && frames.length >= 2) {
+                        const topic = frames[0].toString();
+                        const messageBytes = frames[1];
+                        
+                        if (topic === "servers") {
+                            // garantir que messageBytes é um buffer
+                            const messageBuffer = Buffer.isBuffer(messageBytes) ? messageBytes : Buffer.from(messageBytes);
+                            const data = msgpack.decode(messageBuffer);
+                            if (data.service === "election" && data.data && data.data.coordinator) {
+                                const oldCoordinator = this.coordinator;
+                                this.coordinator = data.data.coordinator;
+                                const clockReceived = data.data.clock || 0;
+                                this.updateClock(clockReceived);
+                                console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} recebeu anúncio de novo coordenador`);
+                                // Buscar nome legível do coordenador anterior
+                                const oldCoordinatorDisplay = oldCoordinator ? (this.serverList.find(s => s.name === oldCoordinator) ? `server_${this.serverList.find(s => s.name === oldCoordinator).rank}` : oldCoordinator) : 'Nenhum';
+                                console.log(`[AUDITORIA RELÓGIO] Coordenador anterior: ${oldCoordinatorDisplay}`);
+                                console.log(`[AUDITORIA RELÓGIO] Novo coordenador: ${this.getCoordinatorDisplayName()}`);
+                                console.log(`[AUDITORIA RELÓGIO] Relógio lógico recebido: ${clockReceived}, Relógio atual: ${this.logicalClock}`);
+                            }
                         }
                     }
+                } catch (error) {
+                    // Tratar erro específico de socket ocupado
+                    if (error.message && error.message.includes('Socket is busy reading')) {
+                        // Aguardar um pouco antes de tentar novamente
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        continue;
+                    }
+                    
+                    // ignorar erros de timeout, mas logar outros erros
+                    if (error.message && !error.message.includes('timeout') && !error.message.includes('Resource temporarily unavailable')) {
+                        console.error(`[AUDITORIA RELÓGIO] Erro no listener de servidores: ${error.message}`);
+                    }
+                    // Pequeno delay para evitar loop muito rápido em caso de erro
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
-            } catch (error) {
-                // ignorar erros de timeout
             }
-        }, 1000);
+        })();
     }
     
     startReplicationListener() {
+        // Garantir que apenas uma instância do listener esteja rodando
+        if (this.replicationListenerRunning) {
+            console.log(`[REPLICACAO] Listener de replicação já está rodando`);
+            return;
+        }
+        
+        this.replicationListenerRunning = true;
+        
         // thread pra escutar mensagens de replicação
-        setInterval(async () => {
-            try {
-                const frames = await this.replicationSubSocket.receive();
-                if (frames && frames.length >= 2) {
-                    const topic = frames[0].toString();
-                    const messageBytes = frames[1];
+        // Usar loop contínuo ao invés de setInterval para não perder mensagens
+        (async () => {
+            while (this.replicationListenerRunning) {
+                try {
+                    // ZeroMQ não permite múltiplas operações receive() simultâneas
+                    // Garantir que apenas uma operação esteja ativa por vez
+                    const frames = await this.replicationSubSocket.receive();
                     
-                    if (topic === "replication") {
-                        // garantir que messageBytes é um buffer
-                        const messageBuffer = Buffer.isBuffer(messageBytes) ? messageBytes : Buffer.from(messageBytes);
-                        const data = msgpack.decode(messageBuffer);
+                    if (frames && frames.length >= 2) {
+                        const topic = frames[0].toString();
+                        const messageBytes = frames[1];
                         
-                        // ignorar mensagens próprias (evitar loops)
-                        if (data.originServer === this.serverName) {
-                            return;
+                        if (topic === "replication") {
+                            // garantir que messageBytes é um buffer
+                            const messageBuffer = Buffer.isBuffer(messageBytes) ? messageBytes : Buffer.from(messageBytes);
+                            const data = msgpack.decode(messageBuffer);
+                            
+                            // ignorar mensagens próprias (evitar loops)
+                            if (data.originServer === this.serverName) {
+                                continue;
+                            }
+                            
+                            const originDisplayName = this.getServerDisplayName(data.originServer);
+                            const currentDisplayName = this.getServerDisplayName(this.serverName);
+                            console.log(`[REPLICACAO] Servidor ${currentDisplayName} recebeu dados pra replicação de ${originDisplayName}`);
+                            console.log(`[REPLICACAO] Tipo de dados: ${data.dataType}`);
+                            
+                            // atualizar relógio lógico
+                            if (data.clock !== undefined) {
+                                this.updateClock(data.clock);
+                            }
+                            
+                            // processar dados recebidos
+                            // IMPORTANTE: aguardar a conclusão antes do próximo receive()
+                            // para evitar "Socket is busy reading"
+                            try {
+                                await this.applyReplication(data);
+                            } catch (replicationError) {
+                                console.error(`[REPLICACAO] Erro ao aplicar replicação: ${replicationError.message}`);
+                            }
                         }
-                        
-                        console.log(`[REPLICACAO] Servidor ${this.serverName} recebeu dados pra replicação de ${data.originServer}`);
-                        console.log(`[REPLICACAO] Tipo de dados: ${data.dataType}`);
-                        
-                        // atualizar relógio lógico
-                        if (data.clock !== undefined) {
-                            this.updateClock(data.clock);
-                        }
-                        
-                        // processar dados recebidos
-                        await this.applyReplication(data);
                     }
+                } catch (error) {
+                    // Tratar erro específico de socket ocupado
+                    if (error.message && error.message.includes('Socket is busy reading')) {
+                        // Aguardar um pouco antes de tentar novamente
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        continue;
+                    }
+                    
+                    // ignorar erros de timeout, mas logar outros erros
+                    if (error.message && !error.message.includes('timeout') && !error.message.includes('Resource temporarily unavailable')) {
+                        console.error(`[REPLICACAO] Erro no listener de replicação: ${error.message}`);
+                    }
+                    // Pequeno delay para evitar loop muito rápido em caso de erro
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
-            } catch (error) {
-                // ignorar erros de timeout
             }
-        }, 1000);
+        })();
     }
     
     startServerRequestListener() {
+        // Garantir que apenas uma instância do listener esteja rodando
+        if (this.serverRequestListenerRunning) {
+            console.log(`[AUDITORIA RELÓGIO] Listener de requisições de servidores já está rodando`);
+            return;
+        }
+        
+        this.serverRequestListenerRunning = true;
+        
         // thread pra escutar requisições de outros servidores
-        setInterval(async () => {
-            try {
-                const message = await this.serverRepSocket.receive();
-                const messageBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
-                const data = msgpack.decode(messageBuffer);
-                
-                const service = data.service;
-                const serviceData = data.data || {};
-                
-                let response;
-                
-                if (service === "clock") {
-                    response = await this.handleClock(serviceData);
-                } else if (service === "election") {
-                    response = await this.handleElection(serviceData);
-                } else {
-                    response = {
-                        service: service || "error",
-                        data: {
-                            status: "erro",
-                            timestamp: Date.now(),
-                            clock: this.incrementClock(),
-                            description: `Serviço '${service}' não reconhecido`
-                        }
-                    };
+        // Usar loop contínuo ao invés de setInterval para evitar múltiplas operações receive() simultâneas
+        (async () => {
+            while (this.serverRequestListenerRunning) {
+                try {
+                    // ZeroMQ não permite múltiplas operações receive() simultâneas
+                    // Garantir que apenas uma operação esteja ativa por vez
+                    const message = await this.serverRepSocket.receive();
+                    const messageBuffer = Buffer.isBuffer(message) ? message : Buffer.from(message);
+                    const data = msgpack.decode(messageBuffer);
+                    
+                    const service = data.service;
+                    const serviceData = data.data || {};
+                    
+                    let response;
+                    
+                    if (service === "clock") {
+                        response = await this.handleClock(serviceData);
+                    } else if (service === "election") {
+                        response = await this.handleElection(serviceData);
+                    } else {
+                        response = {
+                            service: service || "error",
+                            data: {
+                                status: "erro",
+                                timestamp: Date.now(),
+                                clock: this.incrementClock(),
+                                description: `Serviço '${service}' não reconhecido`
+                            }
+                        };
+                    }
+                    
+                    await this.serverRepSocket.send(msgpack.encode(response));
+                } catch (error) {
+                    // Tratar erro específico de socket ocupado
+                    if (error.message && error.message.includes('Socket is busy reading')) {
+                        // Aguardar um pouco antes de tentar novamente
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                        continue;
+                    }
+                    
+                    // ignorar erros de timeout, mas logar outros erros
+                    if (error.message && !error.message.includes('timeout') && !error.message.includes('Resource temporarily unavailable')) {
+                        console.error(`[AUDITORIA RELÓGIO] Erro no listener de requisições de servidores: ${error.message}`);
+                    }
+                    // Pequeno delay para evitar loop muito rápido em caso de erro
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
-                
-                await this.serverRepSocket.send(msgpack.encode(response));
-            } catch (error) {
-                // ignorar erros de timeout
             }
-        }, 1000);
+        })();
     }
     
     async applyReplication(data) {
@@ -212,42 +399,94 @@ class Server {
                     
                 case 'message':
                     // Adicionar mensagem
+                    // Verificar duplicatas de forma mais robusta
                     const existingMessageIndex = this.messages.findIndex(m => 
                         m.type === payload.type &&
                         m.timestamp === payload.timestamp &&
-                        m.clock === payload.clock
+                        m.clock === payload.clock &&
+                        ((m.user === payload.user && m.channel === payload.channel) ||
+                         (m.src === payload.src && m.dst === payload.dst))
                     );
                     if (existingMessageIndex < 0) {
                         this.messages.push(payload);
-                        console.log(`[REPLICACAO] Mensagem adicionada (tipo: ${payload.type})`);
+                        // Ordenar mensagens por relógio lógico após adicionar
+                        this.messages.sort((a, b) => a.clock - b.clock);
+                        console.log(`[REPLICACAO] Mensagem adicionada (tipo: ${payload.type}, clock: ${payload.clock})`);
                         this.saveMessages();
+                    } else {
+                        console.log(`[REPLICACAO] Mensagem duplicada ignorada (tipo: ${payload.type}, clock: ${payload.clock})`);
                     }
                     break;
                     
                 case 'sync':
                     // Sincronização completa de dados
-                    if (payload.users) {
+                    // Garantir que todos os dados sejam mesclados corretamente (não apenas substituídos)
+                    if (payload.users && Array.isArray(payload.users)) {
                         console.log(`[REPLICACAO] Sincronizando ${payload.users.length} usuários`);
-                        this.users = payload.users;
+                        // Mesclar usuários: adicionar novos e atualizar existentes
+                        payload.users.forEach(user => {
+                            const existingIndex = this.users.findIndex(u => u.user === user.user);
+                            if (existingIndex >= 0) {
+                                // Atualizar se o relógio lógico for maior (dados mais recentes)
+                                if (user.clock > this.users[existingIndex].clock) {
+                                    this.users[existingIndex] = user;
+                                }
+                            } else {
+                                this.users.push(user);
+                            }
+                        });
                         this.saveUsers();
                     }
-                    if (payload.channels) {
+                    if (payload.channels && Array.isArray(payload.channels)) {
                         console.log(`[REPLICACAO] Sincronizando ${payload.channels.length} canais`);
-                        this.channels = payload.channels;
+                        // Mesclar canais: adicionar novos e atualizar existentes
+                        payload.channels.forEach(channel => {
+                            const existingIndex = this.channels.findIndex(c => c.channel === channel.channel);
+                            if (existingIndex >= 0) {
+                                // Atualizar se o relógio lógico for maior (dados mais recentes)
+                                if (channel.clock > this.channels[existingIndex].clock) {
+                                    this.channels[existingIndex] = channel;
+                                }
+                            } else {
+                                this.channels.push(channel);
+                            }
+                        });
                         this.saveChannels();
                     }
-                    if (payload.messages) {
+                    if (payload.messages && Array.isArray(payload.messages)) {
                         console.log(`[REPLICACAO] Sincronizando ${payload.messages.length} mensagens`);
-                        this.messages = payload.messages;
+                        // Mesclar mensagens: adicionar apenas novas mensagens
+                        payload.messages.forEach(message => {
+                            const existingIndex = this.messages.findIndex(m => 
+                                m.type === message.type &&
+                                m.timestamp === message.timestamp &&
+                                m.clock === message.clock &&
+                                ((m.user === message.user && m.channel === message.channel) ||
+                                 (m.src === message.src && m.dst === message.dst))
+                            );
+                            if (existingIndex < 0) {
+                                this.messages.push(message);
+                            }
+                        });
+                        // Ordenar mensagens por relógio lógico
+                        this.messages.sort((a, b) => a.clock - b.clock);
                         this.saveMessages();
                     }
+                    console.log(`[REPLICACAO] Sincronização completa aplicada. Total: ${this.users.length} usuários, ${this.channels.length} canais, ${this.messages.length} mensagens`);
                     break;
                     
                 case 'sync_request':
                     // Solicitação de sincronização - qualquer servidor pode responder
                     // Mas apenas o coordenador ou o primeiro servidor disponível responde
-                    if (this.coordinator === this.serverName || this.serverRank === 1) {
-                        console.log(`[REPLICACAO] Servidor ${this.serverName} recebeu solicitação de sincronização de ${originServer}`);
+                    // Se não temos coordenador ainda, qualquer servidor com rank menor pode responder
+                    const shouldRespond = this.coordinator === this.serverName || 
+                                         this.serverRank === 1 || 
+                                         (!this.coordinator && this.serverRank && this.serverRank <= 2);
+                    
+                    if (shouldRespond) {
+                        const originDisplayName = this.getServerDisplayName(originServer);
+                        const currentDisplayName = this.getServerDisplayName(this.serverName);
+                        console.log(`[REPLICACAO] Servidor ${currentDisplayName} recebeu solicitação de sincronização de ${originDisplayName}`);
                         // Aguardar um pouco para evitar múltiplas respostas simultâneas
                         setTimeout(async () => {
                             await this.broadcastSync();
@@ -273,7 +512,8 @@ class Server {
                 clock: this.incrementClock()
             };
             
-            console.log(`[REPLICACAO] Servidor ${this.serverName} replicando ${dataType}: ${JSON.stringify(payload).substring(0, 100)}`);
+            const currentDisplayName = this.getServerDisplayName(this.serverName);
+            console.log(`[REPLICACAO] Servidor ${currentDisplayName} replicando ${dataType}: ${JSON.stringify(payload).substring(0, 100)}`);
             
             await this.pubSocket.send(["replication", msgpack.encode(replicationMessage)]);
             console.log(`[REPLICACAO] Dados de ${dataType} replicados com sucesso`);
@@ -285,7 +525,8 @@ class Server {
     async requestSync() {
         // Solicitar sincronização completa de outro servidor
         try {
-            console.log(`[REPLICACAO] Servidor ${this.serverName} solicitando sincronização completa`);
+            const currentDisplayName = this.getServerDisplayName(this.serverName);
+            console.log(`[REPLICACAO] Servidor ${currentDisplayName} solicitando sincronização completa`);
             
             // Enviar solicitação de sincronização
             const syncRequest = {
@@ -304,7 +545,8 @@ class Server {
     async broadcastSync() {
         // Enviar dados completos para todos os servidores
         try {
-            console.log(`[REPLICACAO] Servidor ${this.serverName} enviando sincronização completa`);
+            const currentDisplayName = this.getServerDisplayName(this.serverName);
+            console.log(`[REPLICACAO] Servidor ${currentDisplayName} enviando sincronização completa`);
             
             const syncData = {
                 originServer: this.serverName,
@@ -385,6 +627,41 @@ class Server {
         }
     }
     
+    getServerDisplayName(serverName) {
+        // Retornar nome legível de qualquer servidor baseado no rank
+        if (!serverName) {
+            return 'Desconhecido';
+        }
+        
+        // Se é este servidor, usar o rank atual
+        if (serverName === this.serverName && this.serverRank !== null) {
+            return `server_${this.serverRank}`;
+        }
+        
+        // Buscar na lista de servidores o rank do servidor
+        if (this.serverList && this.serverList.length > 0) {
+            const server = this.serverList.find(s => s.name === serverName);
+            if (server && server.rank !== undefined) {
+                return `server_${server.rank}`;
+            }
+        }
+        
+        // Fallback: retornar o nome original (hash) se não encontrar o rank
+        // Mas tentar formatar melhor se parecer um hash
+        if (/^[a-f0-9]{12}$/.test(serverName)) {
+            return `${serverName.substring(0, 8)}... (rank desconhecido)`;
+        }
+        return serverName;
+    }
+    
+    getCoordinatorDisplayName() {
+        // Retornar nome legível do coordenador baseado no rank
+        if (!this.coordinator) {
+            return 'Nenhum';
+        }
+        return this.getServerDisplayName(this.coordinator);
+    }
+    
     incrementClock() {
         this.logicalClock++;
         return this.logicalClock;
@@ -398,7 +675,7 @@ class Server {
         // Log apenas quando há mudança significativa (quando recebe relógio maior)
         if (receivedClock > clockBefore) {
             console.log(`[AUDITORIA RELÓGIO] Relógio lógico atualizado: ${clockBefore} -> ${clockAfter} (recebido: ${receivedClock})`);
-            console.log(`[COORDENADOR] Coordenador atual: ${this.coordinator || 'Nenhum'}`);
+            console.log(`[COORDENADOR] Coordenador atual: ${this.getCoordinatorDisplayName()}`);
         }
     }
     
@@ -431,10 +708,25 @@ class Server {
                 
                 // Validar estrutura da resposta
                 if (responseData && responseData.data && responseData.data.rank !== undefined) {
+                    const oldRank = this.serverRank;
                     this.serverRank = responseData.data.rank;
                     console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} registrado no servidor de referência`);
                     console.log(`[AUDITORIA RELÓGIO] Rank atribuído: ${this.serverRank}`);
                     console.log(`[AUDITORIA RELÓGIO] Relógio lógico inicial: ${this.logicalClock}`);
+                    
+                    // Atualizar diretório de dados com o novo rank (criar diretório legível)
+                    if (oldRank === null) {
+                        // Primeira vez obtendo o rank - criar diretório e migrar dados se existirem
+                        this.updateDataDirectory();
+                        
+                        // Tentar carregar dados de diretórios antigos (hash) se existirem
+                        this.migrateFromOldDirectories();
+                        
+                        // Carregar dados do novo diretório
+                        this.users = this.loadUsers();
+                        this.channels = this.loadChannels();
+                        this.messages = this.loadMessages();
+                    }
                     
                     if (responseData.data.clock !== undefined) {
                         const clockBefore = this.logicalClock;
@@ -451,10 +743,33 @@ class Server {
                         console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} é o primeiro servidor (rank 1) - tornando-se coordenador`);
                         await this.announceCoordinator();
                     } else {
-                        // Se não é o primeiro, solicitar sincronização após um delay
-                        console.log(`[REPLICACAO] Servidor ${this.serverName} (rank ${this.serverRank}) aguardando para solicitar sincronização inicial`);
+                        // Se não é o primeiro, verificar se já existe coordenador na lista
+                        const coordinatorServer = this.serverList.find(s => s.rank === 1);
+                        if (coordinatorServer) {
+                            this.coordinator = coordinatorServer.name;
+                            console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} (rank ${this.serverRank}) identificou coordenador existente: ${this.getCoordinatorDisplayName()}`);
+                        } else {
+                            console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} (rank ${this.serverRank}) não encontrou coordenador na lista - aguardando anúncio`);
+                            // Aguardar um pouco e verificar novamente
+                            setTimeout(async () => {
+                                await this.getServerList();
+                                const coordinatorServer = this.serverList.find(s => s.rank === 1);
+                                if (coordinatorServer) {
+                                    this.coordinator = coordinatorServer.name;
+                                    console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} identificou coordenador após verificação: ${this.getCoordinatorDisplayName()}`);
+                                } else {
+                                    console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} ainda não encontrou coordenador - iniciando eleição`);
+                                    await this.startElection();
+                                }
+                            }, 3000);
+                        }
+                        
+                        // Solicitar sincronização após um delay
+                        const currentDisplayName = this.getServerDisplayName(this.serverName);
+                        console.log(`[REPLICACAO] Servidor ${currentDisplayName} aguardando para solicitar sincronização inicial`);
                         setTimeout(async () => {
-                            console.log(`[REPLICACAO] Servidor ${this.serverName} solicitando sincronização inicial`);
+                            const currentDisplayName2 = this.getServerDisplayName(this.serverName);
+                            console.log(`[REPLICACAO] Servidor ${currentDisplayName2} solicitando sincronização inicial`);
                             await this.requestSync();
                         }, 5000); // Aguardar 5 segundos para outros servidores iniciarem
                     }
@@ -735,7 +1050,7 @@ class Server {
         this.messageCount++;
         if (this.messageCount % 10 === 0) {
             console.log(`[AUDITORIA RELÓGIO] Processadas ${this.messageCount} mensagens - iniciando sincronização de relógio`);
-            console.log(`[AUDITORIA RELÓGIO] Servidor: ${this.serverName}, Coordenador: ${this.coordinator || 'Nenhum'}, Rank: ${this.serverRank || 'N/A'}`);
+            console.log(`[AUDITORIA RELÓGIO] Servidor: ${this.serverName}, Coordenador: ${this.getCoordinatorDisplayName()}, Rank: ${this.serverRank || 'N/A'}`);
             await this.synchronizeClock();
         }
         
@@ -806,7 +1121,7 @@ class Server {
         this.messageCount++;
         if (this.messageCount % 10 === 0) {
             console.log(`[AUDITORIA RELÓGIO] Processadas ${this.messageCount} mensagens - iniciando sincronização de relógio`);
-            console.log(`[AUDITORIA RELÓGIO] Servidor: ${this.serverName}, Coordenador: ${this.coordinator || 'Nenhum'}, Rank: ${this.serverRank || 'N/A'}`);
+            console.log(`[AUDITORIA RELÓGIO] Servidor: ${this.serverName}, Coordenador: ${this.getCoordinatorDisplayName()}, Rank: ${this.serverRank || 'N/A'}`);
             await this.synchronizeClock();
         }
         
@@ -847,6 +1162,15 @@ class Server {
                 // Validar estrutura da resposta
                 if (responseData && responseData.data && responseData.data.list) {
                     this.serverList = responseData.data.list;
+                    
+                    // Se não temos coordenador, verificar se existe um servidor com rank 1
+                    if (!this.coordinator && this.serverList.length > 0) {
+                        const coordinatorServer = this.serverList.find(s => s.rank === 1);
+                        if (coordinatorServer) {
+                            this.coordinator = coordinatorServer.name;
+                            console.log(`[AUDITORIA RELÓGIO] Servidor ${this.serverName} identificou coordenador da lista: ${this.getCoordinatorDisplayName()}`);
+                        }
+                    }
                     
                     if (responseData.data.clock !== undefined) {
                         this.updateClock(responseData.data.clock);
@@ -948,6 +1272,7 @@ class Server {
                     console.log(`[AUDITORIA RELÓGIO] Sincronização de relógio concluída`);
                     console.log(`[AUDITORIA RELÓGIO] Tempo do coordenador: ${coordinatorTimestamp}, Tempo local: ${currentTimestamp}`);
                     console.log(`[AUDITORIA RELÓGIO] Offset calculado: ${offset} segundos`);
+                    console.log(`[AUDITORIA RELÓGIO] Coordenador atual: ${this.getCoordinatorDisplayName()}`);
                     console.log(`[AUDITORIA RELÓGIO] Relógio lógico atualizado: ${clockBefore} -> ${this.logicalClock}`);
                 }
                 
@@ -1137,7 +1462,7 @@ class Server {
         // Verificar se recebemos anúncio de coordenador
         if (data.coordinator) {
             this.coordinator = data.coordinator;
-            console.log(`Novo coordenador: ${this.coordinator}`);
+            console.log(`Novo coordenador: ${this.getCoordinatorDisplayName()}`);
         }
         
         return {

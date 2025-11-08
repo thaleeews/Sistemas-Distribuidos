@@ -1,0 +1,13 @@
+{
+  "name": "chat-server",
+  "version": "1.0.0",
+  "description": "Servidor de chat usando ZeroMQ",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "zeromq": "^6.0.0",
+    "msgpack-lite": "^0.1.26"
+  }
+}
