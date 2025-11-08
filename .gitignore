@@ -8,7 +8,7 @@ data/
 
 # Python
 __pycache__/
-*.py[cod]
+*.py[cod]  # Ignora .pyc, .pyo, .pyd (compilados), mas NÃO .py (fontes)
 *$py.class
 *.so
 .Python
@@ -27,6 +27,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+# requirements.txt deve estar versionado (não ignorar)
 
 # Virtual environments
 venv/
@@ -44,7 +45,8 @@ ENV/
 Thumbs.db
 
 # Docker
-.dockerignore
+# .dockerignore deve estar versionado (removido da lista)
+# Arquivos Docker devem estar versionados para funcionar em qualquer computador
 
 # Logs
 *.log
@@ -59,6 +61,7 @@ yarn-error.log*
 # .NET
 bin/
 obj/
-*.csproj.user
+*.csproj.user  # Ignora arquivos de usuário, mas .csproj deve estar versionado
 *.suo
 *.user
+# Arquivos .csproj devem estar versionados (não ignorar)
